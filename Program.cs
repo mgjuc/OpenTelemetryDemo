@@ -17,6 +17,7 @@ internal class Program
 
 
         var builder = WebApplication.CreateBuilder(args);
+        builder.Services.AddHttpClient();
 
         var tracingOtlpEndpoint = builder.Configuration["OTLP_ENDPOINT_URL"];
         var otel = builder.Services.AddOpenTelemetry();
@@ -58,6 +59,7 @@ internal class Program
         // Configure the Prometheus scraping endpoint
         app.MapPrometheusScrapingEndpoint();
         app.MapGet("/", SendGreeting);
+        app.MapGet("/NestedGreeting", SendNestedGreeting);
         app.Run();
 
         async Task<string> SendGreeting(ILogger<Program> logger)
@@ -75,6 +77,42 @@ internal class Program
             activity?.SetTag("greeting", "Hello World!");
 
             return "Hello World!";
+        }
+        //http://localhost:5013/NestedGreeting?nestlevel={int}
+        async Task SendNestedGreeting(int nestlevel, ILogger<Program> logger, HttpContext context, IHttpClientFactory clientFactory)
+        {
+            // Create a new Activity scoped to the method
+            using var activity = greeterActivitySource.StartActivity("GreeterActivity");
+
+            if (nestlevel <= 5)
+            {
+                // Log a message
+                logger.LogInformation("Sending greeting, level {nestlevel}", nestlevel);
+
+                // Increment the custom counter
+                countGreetings.Add(1);
+
+                // Add a tag to the Activity
+                activity?.SetTag("nest-level", nestlevel);
+
+                await context.Response.WriteAsync($"Nested Greeting, level: {nestlevel}\r\n");
+
+                if (nestlevel > 0)
+                {
+                    var request = context.Request;
+                    var url = new Uri($"{request.Scheme}://{request.Host}{request.Path}?nestlevel={nestlevel - 1}");
+
+                    // Makes an http call passing the activity information as http headers
+                    var nestedResult = await clientFactory.CreateClient().GetStringAsync(url);
+                    await context.Response.WriteAsync(nestedResult);
+                }
+            }
+            else
+            {
+                // Log a message
+                logger.LogError("Greeting nest level {nestlevel} too high", nestlevel);
+                await context.Response.WriteAsync("Nest level too high, max is 5");
+            }
         }
     }
 }
